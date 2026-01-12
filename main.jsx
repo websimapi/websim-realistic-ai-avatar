@@ -12,6 +12,7 @@ const App = () => {
   const [status, setStatus] = useState("idle");
   const [mouthOpenness, setMouthOpenness] = useState(0);
   const [lastTranscript, setLastTranscript] = useState("");
+  const [interimTranscript, setInterimTranscript] = useState("");
   const [timeline, setTimeline] = useState([]);
   const audioManager = useRef(new AudioManager());
   const recognition = useRef(null);
@@ -20,20 +21,27 @@ const App = () => {
   useEffect(() => {
     if ("webkitSpeechRecognition" in window) {
       const sr = new webkitSpeechRecognition();
-      sr.continuous = false;
-      sr.interimResults = false;
+      sr.continuous = true;
+      sr.interimResults = true;
       sr.lang = "en-US";
       sr.onerror = (e) => {
         console.error("Speech error", e);
-        setStatus("idle");
+        if (e.error !== "no-speech") setStatus("idle");
       };
-      sr.onresult = async (event) => {
-        const text = event.results[0][0].transcript;
-        if (text) {
-          setStatus("processing");
-          playSoundEffect("beep_end.mp3");
-          setLastTranscript(text);
-          await handleConversation(text);
+      sr.onresult = (event) => {
+        let interim = "";
+        let final = "";
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            final += event.results[i][0].transcript;
+          } else {
+            interim += event.results[i][0].transcript;
+          }
+        }
+        if (interim) setInterimTranscript(interim);
+        if (final) {
+          setInterimTranscript("");
+          setLastTranscript(final);
         }
       };
       recognition.current = sr;
@@ -112,9 +120,12 @@ const App = () => {
     if (recognition.current) {
       try {
         setStatus("listening");
+        setInterimTranscript("");
+        setLastTranscript("");
         playSoundEffect("beep_start.mp3");
         recognition.current.start();
       } catch (e) {
+        console.error("Recognition start error:", e);
         setStatus("idle");
       }
     }
@@ -123,10 +134,19 @@ const App = () => {
     if (status === "listening" && recognition.current) {
       try {
         recognition.current.stop();
+        playSoundEffect("beep_end.mp3");
+        const finalSpeech = (lastTranscript + " " + interimTranscript).trim();
+        if (finalSpeech) {
+          setStatus("processing");
+          handleConversation(finalSpeech);
+        } else {
+          setStatus("idle");
+        }
       } catch (e) {
+        setStatus("idle");
       }
     }
-  }, [status]);
+  }, [status, lastTranscript, interimTranscript]);
   if (mode === "replay") {
     return /* @__PURE__ */ jsxDEV("div", { className: "w-full h-full bg-black relative flex flex-col", children: [
       /* @__PURE__ */ jsxDEV(
@@ -136,7 +156,7 @@ const App = () => {
           className: "absolute top-6 left-6 z-50 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white p-3 rounded-full transition-all",
           children: /* @__PURE__ */ jsxDEV(X, { size: 24 }, void 0, false, {
             fileName: "<stdin>",
-            lineNumber: 158,
+            lineNumber: 186,
             columnNumber: 11
           })
         },
@@ -144,7 +164,7 @@ const App = () => {
         false,
         {
           fileName: "<stdin>",
-          lineNumber: 154,
+          lineNumber: 182,
           columnNumber: 9
         }
       ),
@@ -166,13 +186,13 @@ const App = () => {
         false,
         {
           fileName: "<stdin>",
-          lineNumber: 160,
+          lineNumber: 188,
           columnNumber: 9
         }
       )
     ] }, void 0, true, {
       fileName: "<stdin>",
-      lineNumber: 153,
+      lineNumber: 181,
       columnNumber: 7
     });
   }
@@ -185,12 +205,12 @@ const App = () => {
         children: [
           /* @__PURE__ */ jsxDEV(Play, { size: 18, fill: "currentColor" }, void 0, false, {
             fileName: "<stdin>",
-            lineNumber: 184,
+            lineNumber: 212,
             columnNumber: 13
           }),
           /* @__PURE__ */ jsxDEV("span", { className: "text-sm font-bold tracking-wide", children: "REPLAY" }, void 0, false, {
             fileName: "<stdin>",
-            lineNumber: 185,
+            lineNumber: 213,
             columnNumber: 13
           })
         ]
@@ -199,78 +219,100 @@ const App = () => {
       true,
       {
         fileName: "<stdin>",
-        lineNumber: 180,
+        lineNumber: 208,
         columnNumber: 11
       }
     ) }, void 0, false, {
       fileName: "<stdin>",
-      lineNumber: 178,
+      lineNumber: 206,
       columnNumber: 7
     }),
     /* @__PURE__ */ jsxDEV("div", { className: "flex-1 relative overflow-hidden", children: [
       /* @__PURE__ */ jsxDEV(Face, { openness: mouthOpenness }, void 0, false, {
         fileName: "<stdin>",
-        lineNumber: 191,
+        lineNumber: 219,
         columnNumber: 9
       }),
       /* @__PURE__ */ jsxDEV("div", { className: "absolute bottom-12 w-full px-8 text-center pointer-events-none", children: /* @__PURE__ */ jsxDEV("p", { className: "text-white text-xl font-light leading-relaxed drop-shadow-2xl", children: status === "listening" ? "Listening..." : status === "processing" ? "Thinking..." : status === "speaking" ? lastTranscript : lastTranscript || "Hold the mic to speak" }, void 0, false, {
         fileName: "<stdin>",
-        lineNumber: 193,
+        lineNumber: 221,
         columnNumber: 12
       }) }, void 0, false, {
         fileName: "<stdin>",
-        lineNumber: 192,
+        lineNumber: 220,
         columnNumber: 9
       })
     ] }, void 0, true, {
       fileName: "<stdin>",
-      lineNumber: 190,
+      lineNumber: 218,
       columnNumber: 7
     }),
-    /* @__PURE__ */ jsxDEV("div", { className: "h-44 bg-gradient-to-t from-black to-transparent flex items-center justify-center relative z-40 pb-10", children: /* @__PURE__ */ jsxDEV(
-      "button",
-      {
-        className: `
-            w-24 h-24 rounded-full flex items-center justify-center transition-all duration-200
-            shadow-2xl border-4 
-            ${status === "listening" ? "bg-red-500 border-red-400 scale-110 listening-pulse" : "bg-white border-zinc-300"}
-            ${status === "processing" || status === "speaking" ? "opacity-30 scale-90" : ""}
-          `,
-        onPointerDown: startListening,
-        onPointerUp: stopListening,
-        onPointerLeave: stopListening,
-        disabled: status === "processing" || status === "speaking",
-        children: status === "processing" ? /* @__PURE__ */ jsxDEV(Loader2, { className: "animate-spin text-black", size: 40 }, void 0, false, {
+    /* @__PURE__ */ jsxDEV("div", { className: "h-64 bg-gradient-to-t from-black via-black/80 to-transparent flex flex-col items-center justify-center relative z-40 pb-8", children: /* @__PURE__ */ jsxDEV("div", { className: "flex flex-col items-center", children: [
+      /* @__PURE__ */ jsxDEV(
+        "button",
+        {
+          className: `
+              w-24 h-24 rounded-full flex items-center justify-center transition-all duration-200
+              shadow-2xl border-4 
+              ${status === "listening" ? "bg-red-500 border-red-400 scale-110 listening-pulse" : "bg-white border-zinc-300"}
+              ${status === "processing" || status === "speaking" ? "opacity-30 scale-90" : ""}
+            `,
+          onPointerDown: startListening,
+          onPointerUp: stopListening,
+          onPointerLeave: stopListening,
+          disabled: status === "processing" || status === "speaking",
+          children: status === "processing" ? /* @__PURE__ */ jsxDEV(Loader2, { className: "animate-spin text-black", size: 40 }, void 0, false, {
+            fileName: "<stdin>",
+            lineNumber: 244,
+            columnNumber: 40
+          }) : /* @__PURE__ */ jsxDEV(Mic, { size: 40, className: status === "listening" ? "text-white" : "text-black" }, void 0, false, {
+            fileName: "<stdin>",
+            lineNumber: 244,
+            columnNumber: 100
+          })
+        },
+        void 0,
+        false,
+        {
           fileName: "<stdin>",
-          lineNumber: 215,
-          columnNumber: 38
-        }) : /* @__PURE__ */ jsxDEV(Mic, { size: 40, className: status === "listening" ? "text-white" : "text-black" }, void 0, false, {
+          lineNumber: 232,
+          columnNumber: 11
+        }
+      ),
+      /* @__PURE__ */ jsxDEV("div", { className: "mt-6 h-12 px-6 w-full max-w-xs text-center overflow-hidden", children: [
+        status === "listening" && /* @__PURE__ */ jsxDEV("p", { className: "text-zinc-400 text-sm font-medium animate-pulse", children: interimTranscript || lastTranscript || "Speak now..." }, void 0, false, {
           fileName: "<stdin>",
-          lineNumber: 215,
-          columnNumber: 98
+          lineNumber: 249,
+          columnNumber: 15
+        }),
+        status === "processing" && /* @__PURE__ */ jsxDEV("p", { className: "text-blue-400 text-xs font-bold uppercase tracking-widest", children: "Analyzing Speech" }, void 0, false, {
+          fileName: "<stdin>",
+          lineNumber: 254,
+          columnNumber: 15
         })
-      },
-      void 0,
-      false,
-      {
+      ] }, void 0, true, {
         fileName: "<stdin>",
-        lineNumber: 203,
-        columnNumber: 9
-      }
-    ) }, void 0, false, {
+        lineNumber: 247,
+        columnNumber: 11
+      })
+    ] }, void 0, true, {
       fileName: "<stdin>",
-      lineNumber: 202,
+      lineNumber: 231,
+      columnNumber: 9
+    }) }, void 0, false, {
+      fileName: "<stdin>",
+      lineNumber: 230,
       columnNumber: 7
     })
   ] }, void 0, true, {
     fileName: "<stdin>",
-    lineNumber: 177,
+    lineNumber: 205,
     columnNumber: 5
   });
 };
 const root = createRoot(document.getElementById("root"));
 root.render(/* @__PURE__ */ jsxDEV(App, {}, void 0, false, {
   fileName: "<stdin>",
-  lineNumber: 223,
+  lineNumber: 266,
   columnNumber: 13
 }));
