@@ -1,1 +1,276 @@
-{"content":"import React, { useState, useEffect, useRef } from 'react';\nimport { createRoot } from 'react-dom/client';\nimport { Face } from './Face.jsx';\nimport { AudioManager, playSoundEffect } from './audioManager.js';\nimport { Player } from \"@websim/remotion/player\";\nimport { RemotionVideo } from \"./RemotionVideo.jsx\";\nimport { Mic, Play, X, Loader2 } from 'lucide-react';\n\nconst FPS = 30;\n\nconst App = () => {\n  // State\n  const [mode, setMode] = useState('live'); // 'live' or 'replay'\n  const [status, setStatus] = useState('idle'); // idle, listening, processing, speaking\n  const [mouthOpenness, setMouthOpenness] = useState(0);\n  const [transcript, setTranscript] = useState(\"\");\n  const [timeline, setTimeline] = useState([]);\n  \n  // Refs\n  const audioManager = useRef(new AudioManager());\n  const recognition = useRef(null);\n  const animationFrame = useRef(null);\n  const currentTimelineFrame = useRef(0);\n\n  // Setup Speech Recognition\n  useEffect(() => {\n    if ('webkitSpeechRecognition' in window) {\n      const sr = new webkitSpeechRecognition();\n      sr.continuous = false;\n      sr.interimResults = false;\n      sr.lang = 'en-US';\n      \n      sr.onstart = () => {\n        setStatus('listening');\n        playSoundEffect('beep_start.mp3');\n      };\n      \n      sr.onend = () => {\n        if (status === 'listening') {\n          setStatus('processing');\n          playSoundEffect('beep_end.mp3');\n        }\n      };\n\n      sr.onresult = async (event) => {\n        const text = event.results[0][0].transcript;\n        setTranscript(text);\n        await handleConversation(text);\n      };\n\n      recognition.current = sr;\n    } else {\n      alert(\"Speech recognition not supported in this browser.\");\n    }\n\n    // Animation Loop for Live Face\n    const loop = () => {\n      if (mode === 'live') {\n        const vol = audioManager.current.getVolume();\n        // Smooth dampening\n        setMouthOpenness(prev => prev + (vol - prev) * 0.3);\n      }\n      animationFrame.current = requestAnimationFrame(loop);\n    };\n    loop();\n\n    return () => cancelAnimationFrame(animationFrame.current);\n  }, [mode, status]);\n\n  const handleConversation = async (userText) => {\n    try {\n      // 1. Generate User TTS (Proxy Voice) for Replay\n      const userTts = await websim.textToSpeech({\n        text: userText,\n        voice: \"en-male\" // A generic user voice\n      });\n      \n      // Calculate duration roughly (mp3 duration logic is complex in browser, we'll estimate or fetch)\n      // For accurate Remotion sync, we need duration. \n      // We will create a temp audio to get duration.\n      const getUserDuration = () => new Promise(resolve => {\n        const a = new Audio(userTts.url);\n        a.onloadedmetadata = () => resolve(a.duration);\n        // Fallback if metadata fails\n        setTimeout(() => resolve(userText.length * 0.1), 2000); \n      });\n      \n      const userDurationSec = await getUserDuration();\n      const userDurationFrames = Math.ceil(userDurationSec * FPS);\n\n      // Add User to Timeline\n      const userStartFrame = currentTimelineFrame.current;\n      const userEvent = {\n        speaker: 'user',\n        text: userText,\n        audioUrl: userTts.url,\n        startFrame: userStartFrame,\n        durationInFrames: userDurationFrames\n      };\n      \n      setTimeline(prev => [...prev, userEvent]);\n      currentTimelineFrame.current += userDurationFrames + 15; // +0.5s pause\n\n      // 2. Get AI Response\n      const history = timeline.map(t => ({ \n        role: t.speaker === 'user' ? 'user' : 'assistant', \n        content: t.text \n      }));\n      \n      const completion = await websim.chat.completions.create({\n        messages: [\n          { role: \"system\", content: \"You are a witty, hyper-intelligent digital avatar. Keep responses concise and conversational (under 2 sentences).\" },\n          ...history,\n          { role: \"user\", content: userText }\n        ]\n      });\n      const aiText = completion.content;\n\n      // 3. Generate AI TTS\n      const aiTts = await websim.textToSpeech({\n        text: aiText,\n        voice: \"en-female\" // The Avatar's voice\n      });\n\n      // 4. Play AI Audio LIVE\n      setStatus('speaking');\n      const response = await fetch(aiTts.url);\n      const blob = await response.blob();\n      \n      await new Promise(resolve => {\n        audioManager.current.playBlob(blob, () => {\n          setStatus('idle');\n          resolve();\n        });\n      });\n\n      // 5. Add AI to Timeline\n      // We calculate duration based on the blob we just played? \n      // Actually audioManager doesn't expose duration easily, let's use the object url.\n      const getAiDuration = () => new Promise(resolve => {\n        const a = new Audio(aiTts.url);\n        a.onloadedmetadata = () => resolve(a.duration);\n      });\n      const aiDurationSec = await getAiDuration();\n      const aiDurationFrames = Math.ceil(aiDurationSec * FPS);\n\n      const aiEvent = {\n        speaker: 'ai',\n        text: aiText,\n        audioUrl: aiTts.url,\n        startFrame: currentTimelineFrame.current,\n        durationInFrames: aiDurationFrames\n      };\n\n      setTimeline(prev => [...prev, aiEvent]);\n      currentTimelineFrame.current += aiDurationFrames + 15;\n\n    } catch (e) {\n      console.error(e);\n      setStatus('idle');\n    }\n  };\n\n  const startListening = () => {\n    if (recognition.current && status === 'idle') {\n      try {\n        recognition.current.start();\n      } catch (e) {\n        console.error(\"Mic error\", e);\n      }\n    }\n  };\n\n  const stopListening = () => {\n    if (recognition.current) {\n      try {\n        recognition.current.stop();\n      } catch (e) { console.error(e); }\n    }\n  };\n\n  if (mode === 'replay') {\n    return (\n      <div className=\"w-full h-full bg-black relative\">\n        <button \n          onClick={() => setMode('live')}\n          className=\"absolute top-4 left-4 z-50 bg-white/20 backdrop-blur text-white p-2 rounded-full\"\n        >\n          <X size={24} />\n        </button>\n        \n        <Player\n          component={RemotionVideo}\n          durationInFrames={Math.max(1, currentTimelineFrame.current)}\n          fps={FPS}\n          compositionWidth={540} // Mobile portrait\n          compositionHeight={960}\n          inputProps={{ timeline }}\n          style={{ width: '100%', height: '100%' }}\n          controls\n          autoPlay\n        />\n      </div>\n    );\n  }\n\n  return (\n    <div className=\"w-full h-full flex flex-col relative bg-black\">\n      \n      {/* Replay Button */}\n      {timeline.length > 0 && status === 'idle' && (\n        <button \n          onClick={() => setMode('replay')}\n          className=\"absolute top-6 right-6 z-50 bg-white/10 border border-white/20 text-white px-4 py-2 rounded-full backdrop-blur-md flex items-center gap-2 hover:bg-white/20 transition-all\"\n        >\n          <Play size={16} fill=\"currentColor\" />\n          <span className=\"text-sm font-medium\">Replay Chat</span>\n        </button>\n      )}\n\n      {/* The Face */}\n      <div className=\"flex-1 relative overflow-hidden\">\n        <Face openness={mouthOpenness} />\n        \n        {/* Subtitles Overlay */}\n        {(status === 'speaking' || status === 'processing') && (\n           <div className=\"absolute bottom-10 w-full text-center px-6\">\n             <p className=\"text-white/80 text-lg font-light animate-fade-in drop-shadow-md\">\n               {status === 'processing' ? 'Thinking...' : transcript}\n             </p>\n           </div>\n        )}\n      </div>\n\n      {/* Controls Area */}\n      <div className=\"h-32 bg-gradient-to-t from-black via-black to-transparent flex items-center justify-center relative z-40 pb-6\">\n        <button\n          className={`\n            w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300\n            ${status === 'listening' ? 'bg-red-500 scale-110 listening-pulse' : 'bg-white text-black hover:scale-105 active:scale-95'}\n            ${status === 'processing' ? 'opacity-50 cursor-wait' : ''}\n          `}\n          onPointerDown={startListening}\n          onPointerUp={stopListening}\n          onPointerLeave={stopListening} // Handle dragging finger off\n          disabled={status === 'processing' || status === 'speaking'}\n        >\n          {status === 'processing' ? (\n            <Loader2 className=\"animate-spin\" size={32} />\n          ) : (\n            <Mic size={32} className={status === 'listening' ? 'text-white' : 'text-black'} />\n          )}\n        </button>\n        \n        <p className=\"absolute bottom-4 text-white/40 text-xs font-medium uppercase tracking-widest pointer-events-none\">\n          {status === 'idle' ? 'Hold to Speak' : status}\n        </p>\n      </div>\n    </div>\n  );\n};\n\nconst root = createRoot(document.getElementById('root'));\nroot.render(<App />);\n\nimport React, { useState, useEffect, useRef, useCallback } from 'react';\nimport { createRoot } from 'react-dom/client';\nimport { Face } from './Face.jsx';\nimport { AudioManager, playSoundEffect } from './audioManager.js';\nimport { Player } from \"@websim/remotion/player\";\nimport { RemotionVideo } from \"./RemotionVideo.jsx\";\nimport { Mic, Play, X, Loader2, RotateCcw } from 'lucide-react';\n\nconst FPS = 30;\n\nconst App = () => {\n  const [mode, setMode] = useState('live');\n  const [status, setStatus] = useState('idle');\n  const [mouthOpenness, setMouthOpenness] = useState(0);\n  const [lastTranscript, setLastTranscript] = useState(\"\");\n  const [timeline, setTimeline] = useState([]);\n  \n  const audioManager = useRef(new AudioManager());\n  const recognition = useRef(null);\n  const animationFrame = useRef(null);\n  const currentTimelineFrame = useRef(0);\n  \n  // Initialize Speech Recognition\n  useEffect(() => {\n    if ('webkitSpeechRecognition' in window) {\n      const sr = new webkitSpeechRecognition();\n      sr.continuous = false;\n      sr.interimResults = false;\n      sr.lang = 'en-US';\n      \n      sr.onstart = () => {\n        console.log(\"Mic started\");\n      };\n      \n      sr.onerror = (e) => {\n        console.error(\"Speech error\", e);\n        setStatus('idle');\n      };\n      \n      sr.onend = () => {\n        // If we stopped but haven't processed (e.g., silence), go back to idle\n        if (status === 'listening') {\n           // We expect onresult to trigger transition to processing\n           // If onend fires without result, it was silence\n        }\n      };\n\n      sr.onresult = async (event) => {\n        const text = event.results[0][0].transcript;\n        if (text) {\n          setStatus('processing');\n          playSoundEffect('beep_end.mp3');\n          setLastTranscript(text);\n          await handleConversation(text);\n        }\n      };\n\n      recognition.current = sr;\n    }\n\n    // Animation loop for Live Mode lip sync\n    const loop = () => {\n      if (mode === 'live') {\n        const vol = audioManager.current.getVolume();\n        setMouthOpenness(prev => {\n          // Smooth interpolation\n          return prev + (vol - prev) * 0.2;\n        });\n      }\n      animationFrame.current = requestAnimationFrame(loop);\n    };\n    loop();\n\n    return () => cancelAnimationFrame(animationFrame.current);\n  }, [mode, status]);\n\n  const handleConversation = async (userText) => {\n    try {\n      // 1. Prepare User's Replay Entry (TTS)\n      const userTts = await websim.textToSpeech({\n        text: userText,\n        voice: \"en-male\"\n      });\n\n      // Hack to get approximate duration without waiting for full metadata load\n      // Average speaking rate ~15 chars per second roughly?\n      // Better: fetch and estimate size? No, let's assume 1s per 15 chars + buffer\n      // Or use a helper. Let's try to get it real.\n      const getDuration = (url) => new Promise((resolve) => {\n        const a = new Audio(url);\n        // Timeout fallback\n        const timeout = setTimeout(() => resolve(Math.max(2, userText.length * 0.08)), 1000);\n        a.onloadedmetadata = () => {\n          clearTimeout(timeout);\n          resolve(a.duration);\n        };\n      });\n\n      const userDur = await getDuration(userTts.url);\n      const userFrames = Math.ceil(userDur * FPS);\n      \n      const userEvent = {\n        speaker: 'user',\n        text: userText,\n        audioUrl: userTts.url,\n        startFrame: currentTimelineFrame.current,\n        durationInFrames: userFrames\n      };\n      \n      const nextStart = currentTimelineFrame.current + userFrames + 10;\n      setTimeline(prev => [...prev, userEvent]);\n      currentTimelineFrame.current = nextStart;\n\n      // 2. AI Chat\n      // Construct history for context\n      const history = timeline.map(t => ({\n        role: t.speaker === 'user' ? 'user' : 'assistant',\n        content: t.text\n      }));\n      \n      const completion = await websim.chat.completions.create({\n        messages: [\n          { role: \"system\", content: \"You are a hyper-realistic digital human. Respond briefly, naturally, and with empathy. Max 2 sentences.\" },\n          ...history,\n          { role: \"user\", content: userText }\n        ]\n      });\n      \n      const aiText = completion.content;\n      setLastTranscript(aiText); // Show what AI is saying\n\n      // 3. AI TTS\n      const aiTts = await websim.textToSpeech({\n        text: aiText,\n        voice: \"en-female\" \n      });\n\n      // 4. Play AI Audio LIVE\n      setStatus('speaking');\n      const response = await fetch(aiTts.url);\n      const blob = await response.blob();\n      \n      await new Promise(resolve => {\n        audioManager.current.playBlob(blob, () => {\n          resolve();\n        });\n      });\n      setStatus('idle');\n\n      // 5. Add AI to Timeline\n      const aiDur = await getDuration(aiTts.url);\n      const aiFrames = Math.ceil(aiDur * FPS);\n\n      const aiEvent = {\n        speaker: 'ai',\n        text: aiText,\n        audioUrl: aiTts.url,\n        startFrame: currentTimelineFrame.current,\n        durationInFrames: aiFrames\n      };\n\n      setTimeline(prev => [...prev, aiEvent]);\n      currentTimelineFrame.current += aiFrames + 10;\n\n    } catch (e) {\n      console.error(e);\n      setStatus('idle');\n      setLastTranscript(\"Error processing...\");\n    }\n  };\n\n  const startListening = useCallback(() => {\n    if (status !== 'idle') return;\n    if (recognition.current) {\n      try {\n        setStatus('listening');\n        playSoundEffect('beep_start.mp3');\n        recognition.current.start();\n      } catch (e) {\n        console.error(\"Start error\", e);\n        setStatus('idle');\n      }\n    } else {\n      alert(\"Microphone not supported.\");\n    }\n  }, [status]);\n\n  const stopListening = useCallback(() => {\n    if (status === 'listening' && recognition.current) {\n      try {\n        recognition.current.stop(); \n        // We wait for 'onresult' or 'onend' to change status\n      } catch(e) {}\n    }\n  }, [status]);\n\n  if (mode === 'replay') {\n    return (\n      <div className=\"w-full h-full bg-black relative flex items-center justify-center\">\n        <button \n          onClick={() => setMode('live')}\n          className=\"absolute top-6 left-6 z-50 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white p-3 rounded-full transition-all\"\n        >\n          <X size={24} />\n        </button>\n        \n        <div className=\"w-full h-full max-w-md aspect-[9/16] shadow-2xl\">\n          <Player\n            component={RemotionVideo}\n            durationInFrames={Math.max(1, currentTimelineFrame.current)}\n            fps={FPS}\n            compositionWidth={540}\n            compositionHeight={960}\n            inputProps={{ timeline }}\n            style={{ width: '100%', height: '100%' }}\n            controls\n            autoPlay\n            loop\n          />\n        </div>\n      </div>\n    );\n  }\n\n  return (\n    <div className=\"w-full h-full flex flex-col relative bg-zinc-900\">\n      \n      {/* Top Bar */}\n      <div className=\"absolute top-0 left-0 w-full p-6 flex justify-between items-start z-50 pointer-events-none\">\n        <div className=\"pointer-events-auto\">\n           {/* Maybe a clear history button later */}\n        </div>\n        \n        {timeline.length > 0 && status === 'idle' && (\n          <button \n            onClick={() => setMode('replay')}\n            className=\"pointer-events-auto bg-blue-600/90 hover:bg-blue-500 text-white pl-4 pr-5 py-2.5 rounded-full backdrop-blur-md flex items-center gap-2 shadow-lg transition-all transform hover:scale-105\"\n          >\n            <Play size={18} fill=\"currentColor\" />\n            <span className=\"text-sm font-bold tracking-wide\">REPLAY</span>\n          </button>\n        )}\n      </div>\n\n      {/* Main Visual Area */}\n      <div className=\"flex-1 relative overflow-hidden flex flex-col\">\n        <Face openness={mouthOpenness} />\n        \n        {/* Subtitles / Status Text */}\n        <div className=\"absolute bottom-4 w-full px-8 text-center pointer-events-none\">\n           <div className={`transition-all duration-500 transform ${status === 'idle' ? 'translate-y-2 opacity-50' : 'translate-y-0 opacity-100'}`}>\n             <p className=\"text-white text-xl font-light leading-relaxed drop-shadow-lg shadow-black\">\n               {status === 'listening' ? 'Listening...' : \n                status === 'processing' ? 'Thinking...' : \n                status === 'speaking' ? lastTranscript :\n                lastTranscript || \"Press and hold to speak\"}\n             </p>\n           </div>\n        </div>\n      </div>\n\n      {/* Control Bar */}\n      <div className=\"h-40 bg-gradient-to-t from-black via-black/90 to-transparent flex items-center justify-center relative z-40 pb-8 pt-10\">\n        \n        <button\n          className={`\n            relative w-24 h-24 rounded-full flex items-center justify-center transition-all duration-200\n            shadow-[0_0_30px_rgba(0,0,0,0.5)] border-4 \n            ${status === 'listening' \n              ? 'bg-red-500 border-red-400 scale-110 listening-pulse shadow-[0_0_50px_rgba(239,68,68,0.4)]' \n              : 'bg-white border-zinc-200 hover:scale-105 active:scale-95'\n            }\n            ${status === 'processing' || status === 'speaking' ? 'opacity-50 cursor-not-allowed scale-90 grayscale' : ''}\n          `}\n          onPointerDown={startListening}\n          onPointerUp={stopListening}\n          onPointerLeave={stopListening}\n          disabled={status === 'processing' || status === 'speaking'}\n        >\n          {status === 'processing' ? (\n            <Loader2 className=\"animate-spin text-black\" size={40} />\n          ) : (\n            <Mic size={40} className={status === 'listening' ? 'text-white' : 'text-black'} />\n          )}\n        </button>\n      </div>\n    </div>\n  );\n};\n\nconst root = createRoot(document.getElementById('root'));\nroot.render(<App />);"}
+import { jsxDEV } from "react/jsx-dev-runtime";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createRoot } from "react-dom/client";
+import { Face } from "./Face.jsx";
+import { AudioManager, playSoundEffect } from "./audioManager.js";
+import { Player } from "@websim/remotion/player";
+import { RemotionVideo } from "./RemotionVideo.jsx";
+import { Mic, Play, X, Loader2 } from "lucide-react";
+const FPS = 30;
+const App = () => {
+  const [mode, setMode] = useState("live");
+  const [status, setStatus] = useState("idle");
+  const [mouthOpenness, setMouthOpenness] = useState(0);
+  const [lastTranscript, setLastTranscript] = useState("");
+  const [timeline, setTimeline] = useState([]);
+  const audioManager = useRef(new AudioManager());
+  const recognition = useRef(null);
+  const animationFrame = useRef(null);
+  const currentTimelineFrame = useRef(0);
+  useEffect(() => {
+    if ("webkitSpeechRecognition" in window) {
+      const sr = new webkitSpeechRecognition();
+      sr.continuous = false;
+      sr.interimResults = false;
+      sr.lang = "en-US";
+      sr.onerror = (e) => {
+        console.error("Speech error", e);
+        setStatus("idle");
+      };
+      sr.onresult = async (event) => {
+        const text = event.results[0][0].transcript;
+        if (text) {
+          setStatus("processing");
+          playSoundEffect("beep_end.mp3");
+          setLastTranscript(text);
+          await handleConversation(text);
+        }
+      };
+      recognition.current = sr;
+    }
+    const loop = () => {
+      if (mode === "live") {
+        const vol = audioManager.current.getVolume();
+        setMouthOpenness((prev) => prev + (vol - prev) * 0.25);
+      }
+      animationFrame.current = requestAnimationFrame(loop);
+    };
+    loop();
+    return () => cancelAnimationFrame(animationFrame.current);
+  }, [mode]);
+  const handleConversation = async (userText) => {
+    try {
+      const userTts = await websim.textToSpeech({ text: userText, voice: "en-male" });
+      const getDuration = (url) => new Promise((resolve) => {
+        const a = new Audio(url);
+        const timeout = setTimeout(() => resolve(2), 2e3);
+        a.onloadedmetadata = () => {
+          clearTimeout(timeout);
+          resolve(a.duration);
+        };
+      });
+      const userDur = await getDuration(userTts.url);
+      const userFrames = Math.ceil(userDur * FPS);
+      const userEvent = {
+        speaker: "user",
+        text: userText,
+        audioUrl: userTts.url,
+        startFrame: currentTimelineFrame.current,
+        durationInFrames: userFrames
+      };
+      setTimeline((prev) => [...prev, userEvent]);
+      currentTimelineFrame.current += userFrames + 15;
+      const history = timeline.map((t) => ({
+        role: t.speaker === "user" ? "user" : "assistant",
+        content: t.text
+      }));
+      const completion = await websim.chat.completions.create({
+        messages: [
+          { role: "system", content: "You are a realistic digital human. Brief responses only. Max 2 sentences." },
+          ...history,
+          { role: "user", content: userText }
+        ]
+      });
+      const aiText = completion.content;
+      setLastTranscript(aiText);
+      const aiTts = await websim.textToSpeech({ text: aiText, voice: "en-female" });
+      setStatus("speaking");
+      const response = await fetch(aiTts.url);
+      const blob = await response.blob();
+      await new Promise((resolve) => {
+        audioManager.current.playBlob(blob, resolve);
+      });
+      setStatus("idle");
+      const aiDur = await getDuration(aiTts.url);
+      const aiFrames = Math.ceil(aiDur * FPS);
+      const aiEvent = {
+        speaker: "ai",
+        text: aiText,
+        audioUrl: aiTts.url,
+        startFrame: currentTimelineFrame.current,
+        durationInFrames: aiFrames
+      };
+      setTimeline((prev) => [...prev, aiEvent]);
+      currentTimelineFrame.current += aiFrames + 15;
+    } catch (e) {
+      console.error(e);
+      setStatus("idle");
+    }
+  };
+  const startListening = useCallback(() => {
+    if (status !== "idle") return;
+    if (recognition.current) {
+      try {
+        setStatus("listening");
+        playSoundEffect("beep_start.mp3");
+        recognition.current.start();
+      } catch (e) {
+        setStatus("idle");
+      }
+    }
+  }, [status]);
+  const stopListening = useCallback(() => {
+    if (status === "listening" && recognition.current) {
+      try {
+        recognition.current.stop();
+      } catch (e) {
+      }
+    }
+  }, [status]);
+  if (mode === "replay") {
+    return /* @__PURE__ */ jsxDEV("div", { className: "w-full h-full bg-black relative flex flex-col", children: [
+      /* @__PURE__ */ jsxDEV(
+        "button",
+        {
+          onClick: () => setMode("live"),
+          className: "absolute top-6 left-6 z-50 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white p-3 rounded-full transition-all",
+          children: /* @__PURE__ */ jsxDEV(X, { size: 24 }, void 0, false, {
+            fileName: "<stdin>",
+            lineNumber: 158,
+            columnNumber: 11
+          })
+        },
+        void 0,
+        false,
+        {
+          fileName: "<stdin>",
+          lineNumber: 154,
+          columnNumber: 9
+        }
+      ),
+      /* @__PURE__ */ jsxDEV(
+        Player,
+        {
+          component: RemotionVideo,
+          durationInFrames: Math.max(1, currentTimelineFrame.current),
+          fps: FPS,
+          compositionWidth: 1080,
+          compositionHeight: 1920,
+          inputProps: { timeline },
+          style: { width: "100%", height: "100%" },
+          controls: true,
+          autoPlay: true,
+          loop: true
+        },
+        void 0,
+        false,
+        {
+          fileName: "<stdin>",
+          lineNumber: 160,
+          columnNumber: 9
+        }
+      )
+    ] }, void 0, true, {
+      fileName: "<stdin>",
+      lineNumber: 153,
+      columnNumber: 7
+    });
+  }
+  return /* @__PURE__ */ jsxDEV("div", { className: "w-full h-full flex flex-col relative bg-zinc-950", children: [
+    /* @__PURE__ */ jsxDEV("div", { className: "absolute top-0 left-0 w-full p-6 flex justify-end items-start z-50", children: timeline.length > 0 && status === "idle" && /* @__PURE__ */ jsxDEV(
+      "button",
+      {
+        onClick: () => setMode("replay"),
+        className: "bg-blue-600/90 hover:bg-blue-500 text-white pl-4 pr-5 py-2.5 rounded-full backdrop-blur-md flex items-center gap-2 shadow-lg transition-all",
+        children: [
+          /* @__PURE__ */ jsxDEV(Play, { size: 18, fill: "currentColor" }, void 0, false, {
+            fileName: "<stdin>",
+            lineNumber: 184,
+            columnNumber: 13
+          }),
+          /* @__PURE__ */ jsxDEV("span", { className: "text-sm font-bold tracking-wide", children: "REPLAY" }, void 0, false, {
+            fileName: "<stdin>",
+            lineNumber: 185,
+            columnNumber: 13
+          })
+        ]
+      },
+      void 0,
+      true,
+      {
+        fileName: "<stdin>",
+        lineNumber: 180,
+        columnNumber: 11
+      }
+    ) }, void 0, false, {
+      fileName: "<stdin>",
+      lineNumber: 178,
+      columnNumber: 7
+    }),
+    /* @__PURE__ */ jsxDEV("div", { className: "flex-1 relative overflow-hidden", children: [
+      /* @__PURE__ */ jsxDEV(Face, { openness: mouthOpenness }, void 0, false, {
+        fileName: "<stdin>",
+        lineNumber: 191,
+        columnNumber: 9
+      }),
+      /* @__PURE__ */ jsxDEV("div", { className: "absolute bottom-12 w-full px-8 text-center pointer-events-none", children: /* @__PURE__ */ jsxDEV("p", { className: "text-white text-xl font-light leading-relaxed drop-shadow-2xl", children: status === "listening" ? "Listening..." : status === "processing" ? "Thinking..." : status === "speaking" ? lastTranscript : lastTranscript || "Hold the mic to speak" }, void 0, false, {
+        fileName: "<stdin>",
+        lineNumber: 193,
+        columnNumber: 12
+      }) }, void 0, false, {
+        fileName: "<stdin>",
+        lineNumber: 192,
+        columnNumber: 9
+      })
+    ] }, void 0, true, {
+      fileName: "<stdin>",
+      lineNumber: 190,
+      columnNumber: 7
+    }),
+    /* @__PURE__ */ jsxDEV("div", { className: "h-44 bg-gradient-to-t from-black to-transparent flex items-center justify-center relative z-40 pb-10", children: /* @__PURE__ */ jsxDEV(
+      "button",
+      {
+        className: `
+            w-24 h-24 rounded-full flex items-center justify-center transition-all duration-200
+            shadow-2xl border-4 
+            ${status === "listening" ? "bg-red-500 border-red-400 scale-110 listening-pulse" : "bg-white border-zinc-300"}
+            ${status === "processing" || status === "speaking" ? "opacity-30 scale-90" : ""}
+          `,
+        onPointerDown: startListening,
+        onPointerUp: stopListening,
+        onPointerLeave: stopListening,
+        disabled: status === "processing" || status === "speaking",
+        children: status === "processing" ? /* @__PURE__ */ jsxDEV(Loader2, { className: "animate-spin text-black", size: 40 }, void 0, false, {
+          fileName: "<stdin>",
+          lineNumber: 215,
+          columnNumber: 38
+        }) : /* @__PURE__ */ jsxDEV(Mic, { size: 40, className: status === "listening" ? "text-white" : "text-black" }, void 0, false, {
+          fileName: "<stdin>",
+          lineNumber: 215,
+          columnNumber: 98
+        })
+      },
+      void 0,
+      false,
+      {
+        fileName: "<stdin>",
+        lineNumber: 203,
+        columnNumber: 9
+      }
+    ) }, void 0, false, {
+      fileName: "<stdin>",
+      lineNumber: 202,
+      columnNumber: 7
+    })
+  ] }, void 0, true, {
+    fileName: "<stdin>",
+    lineNumber: 177,
+    columnNumber: 5
+  });
+};
+const root = createRoot(document.getElementById("root"));
+root.render(/* @__PURE__ */ jsxDEV(App, {}, void 0, false, {
+  fileName: "<stdin>",
+  lineNumber: 223,
+  columnNumber: 13
+}));

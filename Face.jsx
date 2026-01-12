@@ -1,1 +1,115 @@
-{"content":"import React, { useMemo } from 'react';\n\nexport const Face = ({ openness = 0 }) => {\n  // Openness is 0 to 1. \n  // 0 = closed, 1 = wide open.\n  \n  // Calculate dynamic lip paths\n  const lipGap = openness * 60; // Max pixels mouth opens\n  const jawDrop = openness * 20;\n  \n  // These are carefully tuned control points for a generic mouth shape\n  // to overlay onto the generated image.\n  // We use the image as a clip path or texture if possible, but for \"hyper realism\" \n  // in code, we often manipulate the image itself or use a color-matched SVG.\n  // Here we will use the \"puppet\" technique: Split the face.\n  \n  // Actually, a simpler and more effective technique for \"hyper realism\" with a single image:\n  // We place the mouth_interior BEHIND the face.\n  // We place the face on top.\n  // We use a clip-path on the face to \"cut out\" the mouth hole dynamically.\n  // Then we place a separate layer for the Lips on top that stretch.\n  \n  // However, without complex segmentation, standard SVG warping is best.\n  // We will assume the face_base.png has closed lips.\n  // We will simply overlay a \"lip colored\" shape that opens, \n  // OR simpler: Render the Face, and overlay a \"Speech\" animation \n  // that uses the mouth_interior and masks the face.\n  \n  // Let's go with the \"Jaw Drop\" fake using CSS transforms which is very effective for 2D.\n  \n  // Top half of face (static)\n  // Bottom half (jaw) moves down.\n  // Mouth interior revealed behind.\n  \n  return (\n    <div className=\"relative w-full h-full flex items-center justify-center overflow-hidden bg-black\">\n      <div className=\"relative w-[120%] h-[120%] flex items-center justify-center\">\n        \n        {/* The Mouth Interior (Teeth/Tongue) - Fixed in space behind the face */}\n        <div className=\"absolute z-0 w-[30%] h-[10%] top-[53%] left-[35%]\">\n           <img \n            src=\"mouth_interior.png\" \n            className=\"w-full h-full object-cover brightness-75\"\n            style={{ \n              transform: `scale(${0.5 + openness * 0.5}) translateY(${openness * 10}px)` \n            }}\n           />\n        </div>\n\n        {/* The Face - We use a mask to create the mouth hole */}\n        {/* We cheat slightly by using two copies of the image. \n            One for the top lip/face, one for the bottom lip/chin. */}\n            \n        {/* Upper Face */}\n        <div className=\"absolute inset-0 z-10 pointer-events-none\">\n          <img \n            src=\"face_base.png\" \n            className=\"w-full h-full object-cover\"\n            style={{\n              clipPath: `polygon(0% 0%, 100% 0%, 100% 55%, 0% 55%)` // Cuts off at upper lip\n            }}\n          />\n        </div>\n\n        {/* Lower Face (Jaw) */}\n        <div \n          className=\"absolute inset-0 z-10 pointer-events-none\"\n          style={{\n            transform: `translateY(${lipGap}px)`, // Moves down based on audio\n            transformOrigin: '50% 100%',\n            transition: 'transform 0.05s linear'\n          }}\n        >\n          <img \n            src=\"face_base.png\" \n            className=\"w-full h-full object-cover\"\n            style={{\n              clipPath: `polygon(0% 55%, 100% 55%, 100% 100%, 0% 100%)` // Cuts off at lower lip\n            }}\n          />\n        </div>\n        \n        {/* Shadow Overlay to hide the seam when closed */}\n        <div \n          className=\"absolute z-20 w-[40%] h-[20px] top-[54.5%] left-[30%]\"\n          style={{\n            background: 'linear-gradient(to bottom, rgba(0,0,0,0.5), transparent)',\n            opacity: openness > 0.1 ? 1 : 0,\n            filter: 'blur(5px)'\n          }}\n        ></div>\n\n      </div>\n    </div>\n  );\n};\n\nimport React from 'react';\n\n// The \"Puppet\" Face Component\n// It uses a background mouth interior and splits the face image into two parts (upper/lower)\n// to simulate jaw movement.\nexport const Face = ({ openness = 0 }) => {\n  // Config for the animation\n  // Openness 0-1\n  \n  // Jaw drops down\n  const maxJawDrop = 50; // pixels\n  const jawTransform = openness * maxJawDrop;\n  \n  // Interior darkens as it closes (fake ambient occlusion)\n  const interiorBrightness = 0.4 + (openness * 0.6);\n  \n  // Simple scaling for the interior to look like it's revealing more\n  const interiorScale = 0.8 + (openness * 0.2);\n\n  return (\n    <div className=\"relative w-full h-full flex items-center justify-center bg-black overflow-hidden select-none\">\n      \n      {/* Container for the head to center it */}\n      <div className=\"relative w-[120%] h-[120%] flex items-center justify-center transform scale-105\">\n        \n        {/* 1. MOUTH INTERIOR (The background layer) */}\n        {/* Positioned exactly where the mouth is on the face image */}\n        <div className=\"absolute z-0 w-[40%] h-[15%] top-[52%] left-[30%] pointer-events-none\">\n           <img \n            src=\"mouth_interior.png\" \n            className=\"w-full h-full object-cover rounded-full\"\n            style={{ \n              filter: `brightness(${interiorBrightness})`,\n              transform: `scale(${interiorScale})`\n            }}\n           />\n        </div>\n\n        {/* 2. UPPER FACE (Static) */}\n        {/* We clip the bottom part to create the upper lip edge */}\n        <div className=\"absolute inset-0 z-10 pointer-events-none\">\n          <img \n            src=\"face_base.png\" \n            className=\"w-full h-full object-cover\"\n            style={{\n              // Clip path creates the separation line at the mouth seam.\n              // Roughly 54% down is where the lips meet in a standard portrait.\n              clipPath: `polygon(0% 0%, 100% 0%, 100% 53.5%, 0% 53.5%)` \n            }}\n          />\n        </div>\n\n        {/* 3. LOWER FACE / JAW (Dynamic) */}\n        {/* We clip the top part to create the lower lip edge, and translate it down */}\n        <div \n          className=\"absolute inset-0 z-10 pointer-events-none will-change-transform\"\n          style={{\n            transform: `translateY(${jawTransform}px)`,\n            // Move pivot slightly up so it rotates/moves naturally? Just Y translation is usually fine for 2D.\n          }}\n        >\n          <img \n            src=\"face_base.png\" \n            className=\"w-full h-full object-cover\"\n            style={{\n              clipPath: `polygon(0% 53.5%, 100% 53.5%, 100% 100%, 0% 100%)`\n            }}\n          />\n        </div>\n        \n        {/* 4. Shadow/Gradient overlay to blend the \"cut\" when mouth is slightly open */}\n        {/* Only visible when mouth is barely open to hide the sharp image cut line */}\n        <div \n          className=\"absolute z-20 w-[30%] h-[10px] top-[53%] left-[35%] pointer-events-none\"\n          style={{\n            background: '#000',\n            opacity: Math.max(0, 0.5 - openness * 2), // Fades out as mouth opens\n            filter: 'blur(4px)'\n          }}\n        />\n\n      </div>\n    </div>\n  );\n};"}
+import { jsxDEV } from "react/jsx-dev-runtime";
+import React from "react";
+const Face = ({ openness = 0 }) => {
+  const maxJawDrop = 40;
+  const jawTransform = openness * maxJawDrop;
+  const interiorBrightness = 0.3 + openness * 0.7;
+  const interiorScale = 0.85 + openness * 0.15;
+  return /* @__PURE__ */ jsxDEV("div", { className: "relative w-full h-full flex items-center justify-center bg-black overflow-hidden select-none", children: /* @__PURE__ */ jsxDEV("div", { className: "relative w-full h-full max-w-[600px] flex items-center justify-center", children: [
+    /* @__PURE__ */ jsxDEV("div", { className: "absolute z-0 w-[20%] h-[8%] top-[53.5%] left-[40%] pointer-events-none", children: /* @__PURE__ */ jsxDEV(
+      "img",
+      {
+        src: "mouth_interior.png",
+        className: "w-full h-full object-cover rounded-full",
+        style: {
+          filter: `brightness(${interiorBrightness})`,
+          transform: `scale(${interiorScale})`
+        }
+      },
+      void 0,
+      false,
+      {
+        fileName: "<stdin>",
+        lineNumber: 21,
+        columnNumber: 12
+      }
+    ) }, void 0, false, {
+      fileName: "<stdin>",
+      lineNumber: 20,
+      columnNumber: 9
+    }),
+    /* @__PURE__ */ jsxDEV("div", { className: "absolute inset-0 z-10 pointer-events-none", children: /* @__PURE__ */ jsxDEV(
+      "img",
+      {
+        src: "face_base.png",
+        className: "w-full h-full object-contain",
+        style: {
+          clipPath: `polygon(0% 0%, 100% 0%, 100% 55.5%, 0% 55.5%)`
+        }
+      },
+      void 0,
+      false,
+      {
+        fileName: "<stdin>",
+        lineNumber: 33,
+        columnNumber: 11
+      }
+    ) }, void 0, false, {
+      fileName: "<stdin>",
+      lineNumber: 32,
+      columnNumber: 9
+    }),
+    /* @__PURE__ */ jsxDEV(
+      "div",
+      {
+        className: "absolute inset-0 z-10 pointer-events-none will-change-transform",
+        style: {
+          transform: `translateY(${jawTransform}px)`
+        },
+        children: /* @__PURE__ */ jsxDEV(
+          "img",
+          {
+            src: "face_base.png",
+            className: "w-full h-full object-contain",
+            style: {
+              clipPath: `polygon(0% 55.5%, 100% 55.5%, 100% 100%, 0% 100%)`
+            }
+          },
+          void 0,
+          false,
+          {
+            fileName: "<stdin>",
+            lineNumber: 49,
+            columnNumber: 11
+          }
+        )
+      },
+      void 0,
+      false,
+      {
+        fileName: "<stdin>",
+        lineNumber: 43,
+        columnNumber: 9
+      }
+    ),
+    /* @__PURE__ */ jsxDEV(
+      "div",
+      {
+        className: "absolute z-20 w-[25%] h-[12px] top-[55%] left-[37.5%] pointer-events-none",
+        style: {
+          background: "#000",
+          opacity: Math.max(0, 0.4 - openness * 3),
+          filter: "blur(5px)"
+        }
+      },
+      void 0,
+      false,
+      {
+        fileName: "<stdin>",
+        lineNumber: 59,
+        columnNumber: 9
+      }
+    )
+  ] }, void 0, true, {
+    fileName: "<stdin>",
+    lineNumber: 17,
+    columnNumber: 7
+  }) }, void 0, false, {
+    fileName: "<stdin>",
+    lineNumber: 16,
+    columnNumber: 5
+  });
+};
+export {
+  Face
+};
